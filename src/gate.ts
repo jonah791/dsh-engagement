@@ -10,7 +10,16 @@
  * - **范围匹配带 `.` 边界**：`example.com` 不匹配 `evil-example.com`（I6）。
  */
 
-export type ActionClass = 'passive' | 'active' | 'active-auth' | 'intel'
+export type ActionClass = 'meta' | 'passive' | 'active' | 'active-auth' | 'intel'
+
+/**
+ * `meta` 是 2026-09-23 实现时补的**第五类**，起因是一次真实调用：
+ *
+ * 设计稿的裁决表第一行（`engagement === null ⇒ deny`）压过了第九行（`passive ⇒ allow`），
+ * 结果是 **`eng_open` 被自己的闸门挡住**——它正是用来**创建**交战的工具 ⇒ 整件不可用。
+ * 根因是裁决表没有枚举「**先于交战存在**的管理动作」这一格：开交战、列交战清单都不需要
+ * 一个已存在的交战，且零外部副作用（`eng_open` 的唯一副作用就是创建那份交战本身）。
+ */
 
 export type GateReason =
   | 'gate/no-engagement'
@@ -117,6 +126,9 @@ function inWindow(eng: Engagement, nowMs: number): boolean {
  */
 export function decideGate(input: GateInput): GateVerdict {
   const deny = (reason: GateReason): GateVerdict => ({ verdict: 'deny', reason })
+  // ⚠ `meta` 必须排在 null 检查**之前**：开交战的工具自己不需要一个已存在的交战
+  // （2026-09-23 实测事故：这一行漏了 ⇒ `eng_open` 被自己的闸门挡住，整件不可用）。
+  if (input.actionClass === 'meta') return { verdict: 'allow' }
   const eng = input.engagement
   if (eng === null) return deny('gate/no-engagement')
   if (eng.status !== 'active') return deny('gate/closed')

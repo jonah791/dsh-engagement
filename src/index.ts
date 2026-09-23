@@ -115,7 +115,7 @@ export function apply(ctx: Context, config: Config): void {
     readonly actionClass: ActionClass
     /** 从参数里取目标（用于 scope 判定） */
     readonly targetOf?: (args: Record<string, unknown>) => string | undefined
-    readonly run: (args: Record<string, unknown>, c: { eng: Engagement; paths: EngagementPaths }) => Promise<string>
+    readonly run: (args: Record<string, unknown>, c: { eng: Engagement | null; paths: EngagementPaths }) => Promise<string>
   }
 
   /**
@@ -143,14 +143,16 @@ export function apply(ctx: Context, config: Config): void {
           appendTimeline(paths, JSON.parse(line) as Record<string, unknown>)
           return { text: `⛔ 闸门拒绝（${verdict.reason}）——未执行任何动作。\n工具=${spec.name} · actionClass=${spec.actionClass}${target !== undefined ? ` · 目标=${target}` : ''}\n拒绝已落 timeline.jsonl（gate/denied）。` }
         }
-        if (eng === null) return { text: '⛔ 交战不可读且未被闸门拦截——这是内部不一致，请报告。' }
+        if (eng === null && spec.actionClass !== 'meta') {
+          return { text: '⛔ 交战不可读且未被闸门拦截——这是内部不一致，请报告。' }
+        }
 
         try {
           const text = await spec.run(args, { eng, paths })
-          appendTimeline(paths, { atMs: Date.now(), iso: new Date().toISOString(), phase: 'tool/end', tool: spec.name, engagementId: eng.id, ...(target !== undefined ? { target } : {}), outcome: 'ok' })
+          appendTimeline(paths, { atMs: Date.now(), iso: new Date().toISOString(), phase: 'tool/end', tool: spec.name, engagementId: eng?.id ?? engagementId, ...(target !== undefined ? { target } : {}), outcome: 'ok' })
           return { text }
         } catch (err) {
-          appendTimeline(paths, { atMs: Date.now(), iso: new Date().toISOString(), phase: 'tool/end', tool: spec.name, engagementId: eng.id, ...(target !== undefined ? { target } : {}), outcome: 'error', reason: String((err as Error).message).slice(0, 200) })
+          appendTimeline(paths, { atMs: Date.now(), iso: new Date().toISOString(), phase: 'tool/end', tool: spec.name, engagementId: eng?.id ?? engagementId, ...(target !== undefined ? { target } : {}), outcome: 'error', reason: String((err as Error).message).slice(0, 200) })
           return { text: `✗ ${spec.name} 失败：${String((err as Error).message)}` }
         }
       },
@@ -187,7 +189,7 @@ export function apply(ctx: Context, config: Config): void {
       notBefore: { type: 'string', description: '窗口起点 ISO（可省）' },
       notAfter: { type: 'string', required: true, description: '窗口终点 ISO' },
     },
-    actionClass: 'passive',
+    actionClass: 'meta',
     async run(args) {
       const now = new Date()
       const id = 'eng-' + now.toISOString().slice(0, 10).replace(/-/g, '') + '-' + randomUUID().slice(0, 6)
@@ -228,7 +230,7 @@ export function apply(ctx: Context, config: Config): void {
       engagementId: { type: 'string', description: '交战 id（缺省列出全部交战）' },
       view: { type: 'string', description: 'summary（缺省）| findings | evidence | timeline' },
     },
-    actionClass: 'passive',
+    actionClass: 'meta',
     async run(args) {
       const id = String(args['engagementId'] ?? '')
       if (id === '') {
@@ -268,11 +270,13 @@ export function apply(ctx: Context, config: Config): void {
     },
     actionClass: 'passive',
     async run(args, c) {
-      const closed: Engagement = { ...c.eng, status: 'closed' }
+      const eng = c.eng
+      if (eng === null) throw new Error('eng_close 需要一个可读的交战')
+      const closed: Engagement = { ...eng, status: 'closed' }
       writeEngagement(c.paths, closed)
-      appendTimeline(c.paths, { atMs: Date.now(), iso: new Date().toISOString(), phase: 'engagement/closed', tool: 'eng_close', engagementId: c.eng.id, outcome: 'ok', reason: String(args['summary'] ?? '').slice(0, 200) })
+      appendTimeline(c.paths, { atMs: Date.now(), iso: new Date().toISOString(), phase: 'engagement/closed', tool: 'eng_close', engagementId: eng.id, outcome: 'ok', reason: String(args['summary'] ?? '').slice(0, 200) })
       const findings = readFindings(c.paths)
-      return `交战 ${c.eng.id} 已结案。\n摘要：${String(args['summary'] ?? '')}\n发现 ${findings.length} 条 · 证据 ${readEvidence(c.paths).length} 条 · 闸门拒绝 ${deniedCount(c.paths)} 次\n（结案后所有 active 动作将被闸门判 deny：gate/closed）`
+      return `交战 ${eng.id} 已结案。\n摘要：${String(args['summary'] ?? '')}\n发现 ${findings.length} 条 · 证据 ${readEvidence(c.paths).length} 条 · 闸门拒绝 ${deniedCount(c.paths)} 次\n（结案后所有 active 动作将被闸门判 deny：gate/closed）`
     },
   })
 
@@ -597,22 +601,24 @@ export function apply(ctx: Context, config: Config): void {
     },
     actionClass: 'passive',
     async run(args, c) {
+      const eng = c.eng
+      if (eng === null) throw new Error('eng_report 需要一个可读的交战')
       const findings = readFindings(c.paths)
       const evidence = readEvidence(c.paths)
       const timeline = readTimeline(c.paths)
       const denied = deniedCount(c.paths)
       const digest = sha256(JSON.stringify({ findings, evidence })).slice(0, 32)
       if (String(args['format'] ?? 'md') === 'json') {
-        return JSON.stringify({ engagement: c.eng, counts: { findings: findings.length, evidence: evidence.length, denied }, digest, findings, evidence }, null, 1)
+        return JSON.stringify({ engagement: eng, counts: { findings: findings.length, evidence: evidence.length, denied }, digest, findings, evidence }, null, 1)
       }
       const lines = [
-        `# 交战报告 · ${c.eng.id}`,
+        `# 交战报告 · ${eng.id}`,
         '',
-        `- 标题：${c.eng.title ?? '(无)'}`,
-        `- 状态：${c.eng.status}`,
-        `- 授权：${c.eng.authorization.source}（ref=${c.eng.authorization.ref}）`,
-        `- 范围：${c.eng.scope.targets.join(', ')}`,
-        `- 窗口：${c.eng.window.notBefore ?? '(即刻)'} → ${c.eng.window.notAfter}`,
+        `- 标题：${eng.title ?? '(无)'}`,
+        `- 状态：${eng.status}`,
+        `- 授权：${eng.authorization.source}（ref=${eng.authorization.ref}）`,
+        `- 范围：${eng.scope.targets.join(', ')}`,
+        `- 窗口：${eng.window.notBefore ?? '(即刻)'} → ${eng.window.notAfter}`,
         `- 计数：发现 ${findings.length} · 证据 ${evidence.length} · 闸门拒绝 ${denied}`,
         `- 证据校验和：${digest}`,
         '',
