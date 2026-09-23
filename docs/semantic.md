@@ -106,6 +106,8 @@ decideGate({ engagement, actionClass, target?, nowMs }): { verdict: 'allow' } | 
 | A13 | 工具面恰为 12，且注册经单一切面 | 同上 A9 运行时组（`registered.length === 12`） | 已实测 |
 | A14 | 移植的 25 个模块零改动编译通过 | `tsc -p tsconfig.json` 退出码 0 | 已实测 |
 | A15 | 组合切换后旧 36 件从工具面消失、新 12 件在场 | 挂载后 `plugin_boot_status` + 工具清单 | 待验收 |
+| A15b | `eng_open` 可真的开出交战（正路径，不再被自己的闸门挡住） | `tests/live-path.test.mjs`（20/20 全绿）+ 线上实测开出 `eng-20260923-c9e0cf` | 已实测 |
+| A15c | 越界目标在**触碰通道前**被拒且落盘 | 线上实测：`eng_recon_host(host=evil.example.org)` ⇒ `gate/out-of-scope` + 「未执行任何动作」；`eng_status` 显示闸门拒绝计数 +1 | 已实测 |
 | A16 | 一次真实交战（靶场）里发现→载荷→验证三步共享同一上下文 | `eng_finding` 的 findingId 被 `eng_payload` / `eng_verify` 直接消费，`eng_report` 时间线含三步同源证据 id | 待线上验收 |
 
 ## 8 · 与实现的关系
@@ -124,6 +126,7 @@ decideGate({ engagement, actionClass, target?, nowMs }): { verdict: 'allow' } | 
 | 2026-09-23 | 移植时用**带前缀**命名（五件各有自己的 `trace.ts`，会撞名）⇒ `red-trace.ts` / `blue-trace.ts` / …；内部相对导入按前缀重写，并修掉一处**内联类型导入**（`import('./pure.js')`，`from '...'` 的替换规则抓不到它）。 |
 | 2026-09-23 | 实现中发现三处 API 与我按设计稿的猜测不同，逐条按真签名改正：`PortResult` **只返回开放端口**（不列 closed ⇒ 输出如实标注口径，不把「未列出」读成「关闭」）；`BisectOptions` 需要 **probe 回调**；`SshArgs` 需要**明文口令**。后两者 ⇒ 本件的 `blind-extract` 与 `remote-exec` **显式未接线**（见 §10）——这是纪律驱动的选择：旧 `cyber-range` 的 `sshpass -p '<明文>'` 把口令同时放进工具参数与子进程命令行，本件不复制它。 |
 | 2026-09-23 | 交付闸门时补一条**结构性判据**（A9）：`deny` 分支里不得出现 `spec.run`——闸门先于副作用不靠「每处记得调」，而靠**没有别的路径能触发副作用**（12 工具只有一个注册入口）。 |
+| 2026-09-23 | **第一个真实调用抓出致命缺陷**：`eng_open` 被自己的闸门挡住（`decideGate` 第一行「无交战 ⇒ deny」压过了「passive ⇒ allow」）⇒ **整件不可用**。根因是裁决表没枚举「**先于交战存在**的管理动作」这一格 ⇒ 补第五类 `actionClass: meta`（排在 null 检查**之前**），`eng_open` / `eng_status` 归入该类。**同一根因的另一半**：注册切面 `reg()` 仍要求交战可读 ⇒ meta 工具照样被挡，一并修。**教训**：坏样本测试全绿 + 加载冒烟全绿 + `tsc` 全绿，仍可能整件不可用——**只测拒绝路径的防线等于只测了一半** ⇒ 补 `tests/live-path.test.mjs`。 |
 
 ## 10 · 未决问题
 
