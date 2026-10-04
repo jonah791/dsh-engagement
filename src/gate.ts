@@ -174,3 +174,26 @@ export function gateDeniedLine(input: {
   if (input.target !== undefined && input.target !== '') out['target'] = input.target
   return JSON.stringify(out)
 }
+
+/**
+ * 落盘/显示用的 target 脱敏：剥离 URL 内嵌凭据（`user:pass@host` ⇒ `host`）。
+ *
+ * **为什么需要它**（2026-10-05，由移植归档测试的任务 t-34662064 抓出真缺陷）：
+ * `eng_recon_web` 的 `url` 与 `eng_verify` 的 `target` 都允许内嵌 `user:pass@`（会转 Basic auth），
+ * 而 `targetOf` 的返回值会写进 `timeline.jsonl`（`gate/denied` 与 `tool/end` 两处）**并显示在返回文本里**
+ * ⇒ 凭据落盘。融合 5 个安全线插件时，旧插件里「**会落盘的 URL 必过 summarizeUrl**」这条防线
+ * 没有被带过来（旧测试还在，因此一移植就报红）。
+ *
+ * ⚠ **绝不能改 `targetOf` 本身**：`decideGate` 用同一个值做 scope 匹配（`inList`），
+ * 剥掉协议或凭据会让合法目标匹配不上 ⇒ **误拦合法动作**。⇒ 分层：**裁决用原始值，落盘用本函数**。
+ * ⚠ 与 `summarizeUrl` 的差别：那个把非 URL 变成 `<unparsable-url>`；本函数**非 URL 原样返回**
+ * ——因为 target 常常就是主机名/IP/CIDR，换成哨兵会毁掉轨迹的可读性与可复核性。
+ */
+export function redactTarget(target: string): string {
+  try {
+    const u = new URL(target)
+    return `${u.hostname}${u.pathname}`
+  } catch {
+    return target
+  }
+}

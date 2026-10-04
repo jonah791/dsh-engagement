@@ -20,7 +20,7 @@ import { join } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import { defineTool } from '@deepseek-ai/dsh-tools'
-import { decideGate, gateDeniedLine, type ActionClass, type Engagement } from './gate.js'
+import { decideGate, gateDeniedLine, redactTarget, type ActionClass, type Engagement } from './gate.js'
 import {
   appendEvidence,
   appendFinding,
@@ -135,13 +135,17 @@ export function apply(ctx: Context, config: Config): void {
         const now = Date.now()
         const { eng, paths } = load(engagementId)
         const target = spec.targetOf?.(args)
+        // ⚠ 落盘/显示用**派生值**：target 可能含 URL 内嵌凭据（`user:pass@` —— 见 gate.ts
+        //    `redactTarget` 的注释）。闸门裁决（下一行）仍用**原始** target：scope 匹配依赖
+        //    完整串，剥掉协议或凭据会让合法目标匹配不上 ⇒ 误拦。
+        const loggedTarget = target !== undefined && target !== '' ? redactTarget(target) : target
         const verdict = decideGate({ engagement: eng, actionClass: spec.actionClass, ...(target !== undefined ? { target } : {}), nowMs: now })
 
         if (verdict.verdict === 'deny') {
           // I4 拒绝留痕：deny 是「防线真在拦」的一手证据，不是日志噪音
-          const line = gateDeniedLine({ atMs: now, engagementId: engagementId === '' ? null : engagementId, tool: spec.name, actionClass: spec.actionClass, ...(target !== undefined ? { target } : {}), reason: verdict.reason })
+          const line = gateDeniedLine({ atMs: now, engagementId: engagementId === '' ? null : engagementId, tool: spec.name, actionClass: spec.actionClass, ...(loggedTarget !== undefined ? { target: loggedTarget } : {}), reason: verdict.reason })
           appendTimeline(paths, JSON.parse(line) as Record<string, unknown>)
-          return { text: `⛔ 闸门拒绝（${verdict.reason}）——未执行任何动作。\n工具=${spec.name} · actionClass=${spec.actionClass}${target !== undefined ? ` · 目标=${target}` : ''}\n拒绝已落 timeline.jsonl（gate/denied）。` }
+          return { text: `⛔ 闸门拒绝（${verdict.reason}）——未执行任何动作。\n工具=${spec.name} · actionClass=${spec.actionClass}${loggedTarget !== undefined ? ` · 目标=${loggedTarget}` : ''}\n拒绝已落 timeline.jsonl（gate/denied）。` }
         }
         if (eng === null && spec.actionClass !== 'meta') {
           return { text: '⛔ 交战不可读且未被闸门拦截——这是内部不一致，请报告。' }
@@ -149,10 +153,10 @@ export function apply(ctx: Context, config: Config): void {
 
         try {
           const text = await spec.run(args, { eng, paths })
-          appendTimeline(paths, { atMs: Date.now(), iso: new Date().toISOString(), phase: 'tool/end', tool: spec.name, engagementId: eng?.id ?? engagementId, ...(target !== undefined ? { target } : {}), outcome: 'ok' })
+          appendTimeline(paths, { atMs: Date.now(), iso: new Date().toISOString(), phase: 'tool/end', tool: spec.name, engagementId: eng?.id ?? engagementId, ...(loggedTarget !== undefined ? { target: loggedTarget } : {}), outcome: 'ok' })
           return { text }
         } catch (err) {
-          appendTimeline(paths, { atMs: Date.now(), iso: new Date().toISOString(), phase: 'tool/end', tool: spec.name, engagementId: eng?.id ?? engagementId, ...(target !== undefined ? { target } : {}), outcome: 'error', reason: String((err as Error).message).slice(0, 200) })
+          appendTimeline(paths, { atMs: Date.now(), iso: new Date().toISOString(), phase: 'tool/end', tool: spec.name, engagementId: eng?.id ?? engagementId, ...(loggedTarget !== undefined ? { target: loggedTarget } : {}), outcome: 'error', reason: String((err as Error).message).slice(0, 200) })
           return { text: `✗ ${spec.name} 失败：${String((err as Error).message)}` }
         }
       },
