@@ -78,6 +78,7 @@ decideGate({ engagement, actionClass, target?, nowMs }): { verdict: 'allow' } | 
 | 证据写入 | `reg()` 的 `recordEvidence`（**单一切面**，不逐工具写） | run 成功后 |
 | 拒绝留痕 | `reg()` 的 deny 分支 → `appendTimeline(gate/denied)` | deny 时 |
 | 通道 | `src/channels.ts`（WSL curl/ssh、Node http）；参数一律过 `shellQuote` + 元字符闸门 | 各 run 体内 |
+| 载荷参数收口 | `eng_payload` 的 `params` → `xp-normalize`：`normalizeSerializedProps`（`primitive=serialize` 的属性表）/ `parseEcbArgs`（`primitive=ecb` 的前缀与偏移） | 该工具 `run` 体内（纯本地计算，零网络零子进程） |
 | **禁止** | 任何其他插件写交战国度 | 由 I1 约束 |
 
 ### 5.4 类型可见性
@@ -112,7 +113,7 @@ decideGate({ engagement, actionClass, target?, nowMs }): { verdict: 'allow' } | 
 
 ## 8 · 与实现的关系
 
-**落点**：`src/gate.ts`（闸门，纯函数）· `src/store.ts`（交战国度）· `src/channels.ts`（通道 + 单一引号出口）· `src/index.ts`（12 工具 + 单一 `reg()` 切面）· 移植模块 25 个（`red-*` / `blue-*` / `xp-*` / `range-*` / `sec-*`，共 4,031 行，**零改动编译通过**）· `tests/gate.test.mjs`。
+**落点**：`src/gate.ts`（闸门，纯函数）· `src/store.ts`（交战国度）· `src/channels.ts`（通道 + 单一引号出口）· `src/index.ts`（12 工具 + 单一 `reg()` 切面）· 移植模块 **21 个 / 3,074 行**（`red-*` / `blue-*` / `xp-*` / `range-*` / `sec-*`；实测口径：`src/*.ts` 去掉本件自研四件后逐文件行数求和）· `scripts/scan-dead-modules.mjs`（生产零调用者扫描，可作闸门）· `tests/wire-contract.test.mjs`（接线级契约守卫）。
 
 **生效判据**：构建 mtime 晚于进程启动 · `eng_status` 可答 · 喂越界目标 ⇒ 拒绝文案 + `gate/denied` 落盘 · 交战国度只有本件写。
 
@@ -127,6 +128,9 @@ decideGate({ engagement, actionClass, target?, nowMs }): { verdict: 'allow' } | 
 | 2026-09-23 | 实现中发现三处 API 与我按设计稿的猜测不同，逐条按真签名改正：`PortResult` **只返回开放端口**（不列 closed ⇒ 输出如实标注口径，不把「未列出」读成「关闭」）；`BisectOptions` 需要 **probe 回调**；`SshArgs` 需要**明文口令**。后两者 ⇒ 本件的 `blind-extract` 与 `remote-exec` **显式未接线**（见 §10）——这是纪律驱动的选择：旧 `cyber-range` 的 `sshpass -p '<明文>'` 把口令同时放进工具参数与子进程命令行，本件不复制它。 |
 | 2026-09-23 | 交付闸门时补一条**结构性判据**（A9）：`deny` 分支里不得出现 `spec.run`——闸门先于副作用不靠「每处记得调」，而靠**没有别的路径能触发副作用**（12 工具只有一个注册入口）。 |
 | 2026-09-23 | **第一个真实调用抓出致命缺陷**：`eng_open` 被自己的闸门挡住（`decideGate` 第一行「无交战 ⇒ deny」压过了「passive ⇒ allow」）⇒ **整件不可用**。根因是裁决表没枚举「**先于交战存在**的管理动作」这一格 ⇒ 补第五类 `actionClass: meta`（排在 null 检查**之前**），`eng_open` / `eng_status` 归入该类。**同一根因的另一半**：注册切面 `reg()` 仍要求交战可读 ⇒ meta 工具照样被挡，一并修。**教训**：坏样本测试全绿 + 加载冒烟全绿 + `tsc` 全绿，仍可能整件不可用——**只测拒绝路径的防线等于只测了一半** ⇒ 补 `tests/live-path.test.mjs`。 |
+| 2026-10-05 | 接线级契约守卫重写（`t-4d733b3c`）：融合时三条接线测试因新契约（工具数 8→12、副作用统一走 `reg()`）被 skip ⇒ 按**新契约**重写判据意图（断言 `timeline.jsonl`，不复活旧轨迹通道），skip 归零。同提交修 `redactTarget` 同名漂移。 |
+| 2026-10-06 | **融合残留死代码处置 + 接线缺口接回**（`t-dd3c6faa`）。判据工具 `scripts/scan-dead-modules.mjs` 实测出 4 个「生产零调用 · 仅测试引用」+ 1 个「零引用」⇒ 删 `blue/range/xp-trace`（旧五件**各自的**侧车轨迹层；§5.5 早已把它列为归档对象，统一 `timeline.jsonl` 取代）与 `sec-crack`（§5.4 B 明判删除），连同其 3 个测试一并删（它们在测死代码）。**同一轮抓出并接回 `xp-normalize`**——它 2026-09 抽出后**从未被调用**（`apply()` 里 serialize 写死 `properties: {}`、ecb 写死 `prefixLen:16 / injectOffset:0` ⇒ 调用者**无法表达**属性表与前缀/偏移），现为 `eng_payload` 增 `params` 并接上两个解析函数。接回当天抓出**两个真缺陷**：① `parseEcbArgs` 的 `!0` 守卫把 `injectOffset=0` 当「必填缺失」拒掉（缺省路径正好传 0 ⇒ 必红）；② `params` 缺 `additionalProperties`（DSH schema DSL 要求显式声明，缺失只在 `defineTool` 运行时以 UNSUPPORTED_SCHEMA 暴露）。**判据工具自身也被抓出 5 处缺陷**（多行 import 恒漏检 / src-tests 口径不分 / 入口未豁免 / 跨行正则串线 / 档位优先级错致「仅再导出」整档消失），每条配尸体样本，`--selftest` 20/20。测试 239/239（新增接线④）· 死代码扫描 exit 0。 |
+| 2026-10-06 | §8 的「移植模块 25 个 / 4,031 行」改为**实测口径**「21 个 / 3,074 行」并写明口径。旧数字无法复现：删除的四个模块合计 1,335 行，而 `4,031 − 3,074 = 957`，两者对不上 ⇒ 该声明当初未经实测。教训与 §7 的 A14 同源：**「零改动编译通过」是当时能验的判据，数字本身也该在写的时候就量。** |
 
 ## 10 · 未决问题
 
@@ -137,3 +141,5 @@ decideGate({ engagement, actionClass, target?, nowMs }): { verdict: 'allow' } | 
 5. **侦察粒度（设计稿 U1）**：三件（域/主机/Web）vs 一件带 `aspects`——本次取三件，待真实交战实测再定。
 6. **本机端点摩擦（U2）**：I9 要求本机也声明进 scope ⇒ 日常本机盘点要先开一次轻量交战。是否引入常驻「house scope」，待出现 ≥3 次「为了看本机端口而开交战」再定。
 7. **旧五件侧车轨迹**：退役后保留不动（它们是历史证据）；本件写自己的 timeline，不迁移旧轨迹。
+8. **`xp-normalize:formatJwtReport` 未接线（2026-10-06 新登记）**：它是 `xp_jwt_forge` 的 render 正文（把密钥 / JWT / 候选密钥渲染成三行，字典裁到 `SECRET_PREVIEW_LIMIT` 条）。`eng_payload` 现统一用 JSON 渲染 ⇒ **逐工具 render 这一层已无位置**。待裁决：**接回**（jwt 分支改用可读文本——但会破坏「各 primitive 返回同一种形状」的一致性）还是**删**（承认统一渲染 + `note` 字段已承载结论）。当前状态显式标注在 `src/xp-normalize.ts` 头部与本文，**不假装它不存在**。判据工具是模块级扫描，不会报「模块内未被使用的导出」这一类更细粒度的死代码。
+9. **判据工具是否升级为 DSH 工具**：`scripts/scan-dead-modules.mjs` 已通用化（`--root` 可扫任意插件、`--selftest` 自检、退出码可接闸门）。若在其它插件上也证明有用，应升级为正式工具并登记工具候选台账，而不是每仓拷一份 `scripts/`（§5.22 规则 6：排障即升级工具，不留一次性脚本碎片）。
