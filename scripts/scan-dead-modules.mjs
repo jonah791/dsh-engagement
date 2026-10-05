@@ -13,7 +13,7 @@
  * 为什么不用一次 `grep`：实测临时 grep（`trace.js|trace'`）会漏掉无扩展名/多行写法，
  * 且无法区分值导入与类型导入 ⇒ 判据必须严格到「能接闸门」。
  *
- * ⚠ 三个已修缺陷（2026-10-06，**全部由真实语料抓到，不是想出来的**）：
+ * ⚠ 八处已修缺陷（2026-10-06，**全部由真实语料抓到，不是想出来的**；①②③④⑤ 属单仓阶段，⑥⑦⑧ 属全生态标定阶段）：
  *   ① **多行 import 恒漏检**：原正则 `[^\n]*` 要求 `import` 与 `from` 同行，而本仓的主流写法是多行
  *      ⇒ 四个**确实被引用**的模块被误报成「零引用」（假阴性 ⇒ 误报死代码；`red-trace.ts` 因此被
  *      任务原判误列为死代码）。修法：`[\s\S]*?`（跨行非贪婪）。对照实测：多行样本 旧=false 新=true。
@@ -21,11 +21,23 @@
  *      测试引用它恰恰是「测试在测死代码」的症状，不是「它还活着」的证据。修法：单列 `TEST-ONLY` 档。
  *   ③ **入口未豁免**：`index.ts` 由宿主加载、不经 src 内部 import ⇒ 曾被列为「仅测试引用」。
  *      修法：`entryNamesOf()` 纯函数判入口。
- *   ⇒ 教训：**判据工具自己必须有尸体样本**。`--selftest` 覆盖语句形态八式 + 入口解析三例，
- *      其中「多行值导入」正是缺陷①的尸体样本（原实现在它上面必错）。
+ *   ④ **跨行正则串线**：`[\s\S]*?` 让**上一行的 `import` 与下一行的 `from` 配成一对** ⇒ 类型导入被
+ *      误判成值导入（`red-enum.ts` 对 `red-trace.ts` 正是如此）。修法：子句内**禁止出现 `from`**
+ *      ——一条约束同时给出「可跨行」与「不串线」。**④ 是修 ① 时引进的。**
+ *   ⑤ **档位优先级错**：生产侧证据（`reexport`）排在测试侧之后 ⇒ 「仅再导出」**整档消失**。
+ *   ⑥ **说明符后缀只认 `.js`**：生态里 `.ts` 写法并存 ⇒ `dsh-agent-memory` 全仓引用漏检（误报 17 个）。
+ *   ⑦ **漏 Fabric manifest 入口**：`dsh-plugin.json` 的 `entrypoints.<role>` ⇒ 46 个 `fabric.ts` 误报。
+ *   ⑧ **动态 `import()` / 副作用 `import`**（详见下方「曾经的已知缺口」）。
+ *   ⇒ **⑥⑦⑧ 在单仓阶段一个都抓不到**：把工具拿到全生态 63 个插件上真跑，初读「53 仓 / 约 200 模块」
+ *      ⇒ 反查得 ⑥⑦ ⇒ 收敛到 6；再抽查 6 里的一条（`dsh-identity-loop`）⇒ 得 ⑧。
+ *   ⇒ 教训：**判据工具自己必须有尸体样本**（`--selftest` 现 29 式），且**单仓自测过关 ≠ 标定完成**。
  *
- * 已知缺口（**显式标注，不假装完备**）：不识别动态 `import('./m.js')` 与副作用 `import './m.js'`
- * —— 本仓语料中零出现，故未实现；若将来出现，本判据会把「只被这两种写法引用的模块」误报为死代码。
+ * ⚠ 曾经的「已知缺口」**已实现**（2026-10-06）：动态 `import('./m.js')` 与副作用 `import './m.js'`。
+ *   当初把它标为缺口的理由是「本仓语料中零出现，故未实现」——**该理由当天就被推翻**：
+ *   `dsh-identity-loop/tests/verdict.test.mjs` 写的正是 `await import('../lib/verdict.js')`，
+ *   于是该仓**有测试覆盖**的 `verdict.ts` 被误报成「零引用」。⇒ **「本仓没有」不是「生态没有」**；
+ *   拿单仓语料去判「某种写法不会发生」，等于把未知当已验。
+ * 仍存的边界（如实标注）：不解析 `package.json` 的 `exports` 子路径；注释里出现的 import 语句会计入。
  *
  * 用法：
  *   node scripts/scan-dead-modules.mjs [--root <插件目录>] [--json <out>]
@@ -71,6 +83,14 @@ function refKindOf(text, base) {
   const clause = '(?:(?!\\bfrom\\b)[\\s\\S])*?'
   const reImport = new RegExp('^[ \\t]*import\\s+(?!type\\s)' + clause + 'from\\s+[\'"]' + mod + '[\'"]', 'm')
   if (reImport.test(text)) return 'USE'
+  // 动态 `import('...')` 与副作用 `import '...'`（缺陷⑧）：两者都是**运行时真加载** ⇒ USE，
+  // 且优先于类型导入（同文件里还有一个 `import type` 不改变「它真的会被加载」这一事实）。
+  // ⚠ 原实现把这两种写法列为「已知缺口」，理由是「`dsh-engagement` 语料里零出现」——
+  //   2026-10-06 在 `dsh-identity-loop` 上**当场出现**（`tests/verdict.test.mjs` 写的是
+  //   `const { verdictFrom } = await import('../lib/verdict.js')`）⇒ 把**有测试覆盖**的模块
+  //   误报成「零引用」。**「本仓没有」不是「生态没有」**：实验性缺口不能靠单仓语料判定「不会发生」。
+  if (new RegExp('\\bimport\\s*\\(\\s*[\'"]' + mod + '[\'"]', 'm').test(text)) return 'USE'
+  if (new RegExp('^[ \\t]*import\\s+[\'"]' + mod + '[\'"]', 'm').test(text)) return 'USE'
   const reReexport = new RegExp('^[ \\t]*export\\s+(?!type\\s)' + clause + 'from\\s+[\'"]' + mod + '[\'"]', 'm')
   if (reReexport.test(text)) return 'REEXPORT'
   const reType = new RegExp('^[ \\t]*(?:import|export)\\s+type\\s+' + clause + 'from\\s+[\'"]' + mod + '[\'"]', 'm')
@@ -152,6 +172,9 @@ function selfTest() {
     ['无扩展名的值导入', "import { a } from './mod'", 'USE'],
     ['.ts + 多行 + 类型导入', "import type {\n  T,\n} from './mod.ts'", 'TYPE'],
     ['.tsx 后缀（同一族）', "import { a } from './mod.tsx'", 'USE'],
+    ['动态 import()（缺陷⑧尸体样本）', "const { a } = await import('../lib/mod.js')", 'USE'],
+    ['副作用 import', "import './mod.js'", 'USE'],
+    ['动态 import 优先于类型导入', "import type { T } from './mod.js'\nawait import('./mod.js')", 'USE'],
     ['相邻 import 不得串线（缺陷④尸体样本）', "import { a } from './other.js'\nimport type { T } from './mod.js'", 'TYPE'],
     ['相邻 import 反向（值导入在后）', "import { a } from './other.js'\nimport { b } from './mod.js'", 'USE'],
     ['三段相邻（只认自己那段）', "import type { A } from './a.js'\nimport { b } from './mod.js'\nimport { c } from './c.js'", 'USE'],
