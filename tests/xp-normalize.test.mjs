@@ -78,18 +78,25 @@ test('parseEcbArgs: 退化——字符串 blockSize 靠 JS 算术隐式转换仍
   assert.equal(p.oracleCalls[0].input, 'A'.repeat(12)) // 36 % '16' → 4，与数字 16 同解
 })
 
-test('parseEcbArgs: 失败路径——prefixLen=0 / injectOffset=0 被拒（!0 为真，报「必填」）', () => {
-  assert.deepEqual(parseEcbArgs({ prefixLen: 0, injectOffset: 36, payload: 'X' }),
-    { ok: false, error: 'prefixLen/injectOffset 必填' })
-  assert.deepEqual(parseEcbArgs({ prefixLen: 38, injectOffset: 0, payload: 'X' }),
-    { ok: false, error: 'prefixLen/injectOffset 必填' })
+test('parseEcbArgs: 边界（2026-10-06 语义修正）——0 是合法值：prefixLen=0（无前缀）/ injectOffset=0（从开头注入）', () => {
+  // ⚠ 旧语义用 `!0` 判「必填缺失」⇒ 这两个合法值被拒。修正为只拒非有限数。
+  // 该缺陷由 tests/wire-contract.test.mjs 的「接线④」缺省路径对照抓出（缺省 injectOffset=0 ⇒ 必红）。
+  assert.deepEqual(parseEcbArgs({ prefixLen: 0, injectOffset: 36, payload: 'X' }).options,
+    { prefixLen: 0, injectOffset: 36, payload: 'X', blockSize: 16, escapeChar: '\\' })
+  assert.deepEqual(parseEcbArgs({ prefixLen: 38, injectOffset: 0, payload: 'X' }).options,
+    { prefixLen: 38, injectOffset: 0, payload: 'X', blockSize: 16, escapeChar: '\\' })
 })
 
-test('parseEcbArgs: 失败路径——缺失 / 非数字（NaN）一律拒绝，不落进块计算', () => {
-  for (const bad of [{}, { prefixLen: 38 }, { injectOffset: 36 }, { prefixLen: 'abc', injectOffset: 36 }]) {
+test('parseEcbArgs: 失败路径——缺失 / 非数字 / 非有限数一律拒绝，不落进块计算', () => {
+  const msg = 'prefixLen/injectOffset 必填（且须为有限数字）'
+  for (const bad of [
+    {}, { prefixLen: 38 }, { injectOffset: 36 },
+    { prefixLen: 'abc', injectOffset: 36 },
+    { prefixLen: 38, injectOffset: Infinity },
+  ]) {
     const r = parseEcbArgs({ ...bad, payload: 'X' })
     assert.equal(r.ok, false, `${JSON.stringify(bad)} 必须被拒`)
-    assert.equal(r.error, 'prefixLen/injectOffset 必填')
+    assert.equal(r.error, msg)
   }
 })
 
@@ -99,7 +106,7 @@ test('parseEcbArgs: 失败路径——payload 空串/缺失走第二道守卫（
   assert.deepEqual(parseEcbArgs({ prefixLen: 38, injectOffset: 36 }),
     { ok: false, error: 'payload 必填' })
   // 两道守卫都该命中时，先报 prefixLen（顺序是契约的一部分）
-  assert.deepEqual(parseEcbArgs({}), { ok: false, error: 'prefixLen/injectOffset 必填' })
+  assert.deepEqual(parseEcbArgs({}), { ok: false, error: 'prefixLen/injectOffset 必填（且须为有限数字）' })
 })
 
 test('parseEcbArgs: 退化（现状锁）——负值通过校验，blockSize 不校验', () => {

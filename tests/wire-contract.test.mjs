@@ -187,6 +187,59 @@ test('幂等：多次挂载互不串味（每次 apply 各自独立注册一套�
   assert.notEqual(a.registered[0], b.registered[0], '两次挂载必须是不同对象（无共享可变状态）')
 })
 
+test('接线④：eng_payload 的 params 真被消费（ecb 前缀/偏移 · serialize 属性表）', async () => {
+  const root = join(tmp, 'wired-params')
+  const { ctx, registered } = makeCtx()
+  apply(ctx, cfg(root))
+
+  const open = registered.find((t) => t.name === 'eng_open')
+  const o = await open.execute({
+    title: '参数面验收', authorizationSource: 'lab-charter',
+    authorizationRef: 'tests/wire-contract.test.mjs', targets: ['127.0.0.1'],
+    notAfter: '2030-01-01T00:00:00Z',
+  })
+  const id = /交战已开启：(\S+)/.exec(o.text)?.[1]
+  assert.ok(id, '需要交战 id 才能调 eng_payload')
+
+  const finding = registered.find((t) => t.name === 'eng_finding')
+  await finding.execute({
+    engagementId: id, target: '127.0.0.1', kind: 'misconfig', severity: 'low',
+    status: 'candidate', evidenceIds: ['ev-fixture'], note: '接线测试夹具',
+  })
+  const { readFindings } = await import('../lib/store.js')
+  const findingId = readFindings(pathsOf(root, id))[0]?.id
+  assert.ok(findingId, 'finding 必须落盘（eng_payload 要求 findingId 存在）')
+
+  const payload = registered.find((t) => t.name === 'eng_payload')
+
+  // 对照①：不传 params ⇒ ecb 走默认（缺省值也是契约的一部分）
+  const dflt = await payload.execute({ engagementId: id, findingId, primitive: 'ecb', value: 'X' })
+  assert.match(dflt.text, /前缀 16B、注入点 0/, '缺省应为 prefixLen=16 / injectOffset=0')
+
+  // 对照②：传 params ⇒ 值必须真的走进去。**旧实现把这俩硬编码成 16/0 ⇒ 此断言必红**
+  // （这正是 `xp-normalize:parseEcbArgs` 被抽出来后没接回时留下的缺口）
+  const wired = await payload.execute({
+    engagementId: id, findingId, primitive: 'ecb', value: 'X',
+    params: { prefixLen: 38, injectOffset: 36 },
+  })
+  assert.match(wired.text, /前缀 38B、注入点 36/, 'params.prefixLen / injectOffset 未被消费')
+
+  // 对照③：serialize 的属性表。**旧实现写死 `properties: {}` ⇒ 属性名必不出现**
+  const ser = await payload.execute({
+    engagementId: id, findingId, primitive: 'serialize', value: 'Probe',
+    params: { properties: { flag: 'yes' } },
+  })
+  assert.match(ser.text, /flag/, 'params.properties 未被消费：产物里没有该属性名')
+
+  // 失败路径：ecb 参数非法必须**响亮失败**且**不落进块计算**。
+  // ⚠ 接线层的失败形是「回报文本」而非「抛出」（`reg()` 统一收口异常 ⇒ 模型看得见原因），故断言读文本；
+  //   再用「产物不得含 plan 字段」证明它真的没算下去（而不是算完再报错）。
+  // ⚠ 用**非数字**而非 0——`0` 在 2026-10-06 的语义修正后已是合法值（见 xp-normalize.test.mjs 边界组）。
+  const bad = await payload.execute({ engagementId: id, findingId, primitive: 'ecb', value: 'X', params: { prefixLen: 'abc' } })
+  assert.match(bad.text, /ecb 参数无效/, '非数字 prefixLen 必须以可读原因响亮失败')
+  assert.doesNotMatch(bad.text, /oracleCalls/, '失败时不得落进块计算（不得先算出 plan 再报错）')
+})
+
 test('cleanup', () => {
   rmSync(tmp, { recursive: true, force: true })
 })

@@ -47,6 +47,7 @@ import { generateBypass } from './xp-webbypass.js'
 import { forgeJwt } from './xp-jwt.js'
 import { generateSerialize } from './xp-serialize.js'
 import { planEcbSplice } from './xp-ecb.js'
+import { normalizeSerializedProps, parseEcbArgs } from './xp-normalize.js'
 import { runDnsrecon, runGobuster, runMasscan, runNmap, runSubfinder, runWhatweb } from './sec-recon.js'
 import { runHydra, runNikto, runSqlmap } from './sec-attack.js'
 import { searchCveNvd, queryUrlhaus, queryUrlscan } from './blue-intel.js'
@@ -481,6 +482,18 @@ export function apply(ctx: Context, config: Config): void {
       primitive: { type: 'string', required: true, description: 'cmdi | php_juggling | web_bypass | jwt | serialize | ecb' },
       value: { type: 'string', description: 'primitive 的主输入（命令 / 密码 / 路径 / JWT / 序列化串）' },
       hint: { type: 'string', description: '辅助输入（如 PHP 松散比较的提示）' },
+      params: {
+        type: 'object',
+        // DSH schema DSL 要求 object 型**显式**声明 additionalProperties——默认缺失即 UNSUPPORTED_SCHEMA，
+        // 且该错误只在 defineTool 运行时暴露（tsc 查不出）⇒ 由 tests/load.test.mjs 的加载冒烟拦下。
+        // 取 true：各 primitive 的键集合不同（serialize{properties} / ecb{5 个标量} / jwt{secret}），
+        // 一个袋子承载正是设计稿 `params{}` 的原意；值的合法性由 `normalizeSerializedProps` /
+        // `parseEcbArgs` 在**代码层**判定（不在 schema 层重复一遍）。
+        additionalProperties: true,
+        description: 'primitive 专属参数（取代旧逐工具入参面）：'
+          + 'serialize{properties} · ecb{prefixLen,injectOffset,payload,blockSize,escapeChar} · jwt{secret}。'
+          + '缺省时各 primitive 走自己的默认值（ecb 为 prefixLen=16 / injectOffset=0 / payload=value）。',
+      },
     },
     actionClass: 'passive',
     async run(args, c) {
@@ -490,14 +503,28 @@ export function apply(ctx: Context, config: Config): void {
       const primitive = String(args['primitive'])
       const value = String(args['value'] ?? '')
       const hint = String(args['hint'] ?? '')
+      const params: Record<string, unknown> =
+        args['params'] !== null && typeof args['params'] === 'object' ? (args['params'] as Record<string, unknown>) : {}
       let candidates: unknown
       if (primitive === 'cmdi') candidates = generateCmdi({ command: value })
       else if (primitive === 'php_juggling') candidates = generateJuggling({ needle: hint !== '' ? hint : value })
       else if (primitive === 'web_bypass') candidates = generateBypass({ base: value })
-      else if (primitive === 'jwt') candidates = forgeJwt({ secret: value })
-      else if (primitive === 'serialize') candidates = generateSerialize({ className: value, properties: {} })
-      else if (primitive === 'ecb') candidates = planEcbSplice({ prefixLen: 16, injectOffset: 0, payload: value })
-      else throw new Error(`未知 primitive：${primitive}`)
+      else if (primitive === 'jwt') candidates = forgeJwt({ secret: params['secret'] !== undefined ? String(params['secret']) : value })
+      else if (primitive === 'serialize') {
+        // 属性表经 `normalizeSerializedProps` 收口：bool/number 保留，其余 String()——PHP 侧只能吃这三种。
+        candidates = generateSerialize({ className: value, properties: normalizeSerializedProps(params['properties']) })
+      } else if (primitive === 'ecb') {
+        // 前缀长度 / 注入偏移由调用者给（旧实现硬编码 16/0 ⇒ 参数面无法表达）；解析失败即响亮拒绝，不落进块计算。
+        const parsed = parseEcbArgs({
+          prefixLen: params['prefixLen'] ?? 16,
+          injectOffset: params['injectOffset'] ?? 0,
+          payload: params['payload'] ?? value,
+          ...(params['blockSize'] !== undefined ? { blockSize: params['blockSize'] } : {}),
+          ...(params['escapeChar'] !== undefined ? { escapeChar: params['escapeChar'] } : {}),
+        })
+        if (!parsed.ok) throw new Error(`ecb 参数无效：${parsed.error}`)
+        candidates = planEcbSplice(parsed.options)
+      } else throw new Error(`未知 primitive：${primitive}`)
       return `载荷候选（finding ${findingId} · primitive ${primitive}）：\n` + JSON.stringify(candidates, null, 1).slice(0, 4000)
     },
   })

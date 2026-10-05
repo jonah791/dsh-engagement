@@ -2,10 +2,18 @@
  * 工具参数的规范化 / 校验 / 输出裁剪（纯函数，无 IO、无时间、不触网）。
  *
  * 抽取动机（技能 `dsh-plugin-testability`）：这些判定原本困在 `index.ts` 的 `apply()` 闭包内
- * （依赖 `ctx`），无法离线单测。抽出后 `apply()` 只做接线，行为**逐字不变**：
- *   - `normalizeSerializedProps` ← xp_serialize_php 的 properties 强制转换
- *   - `parseEcbArgs`            ← xp_ecb_splice 的 Number 转换 + 两道守卫
- *   - `formatJwtReport`         ← xp_jwt_forge 的 render 正文（含候选密钥裁剪）
+ * （依赖 `ctx`），无法离线单测。抽出后 `apply()` 只做接线：
+ *   - `normalizeSerializedProps` ← `eng_payload(serialize)` 的 `params.properties` 收口 —— **已接线**
+ *   - `parseEcbArgs`            ← `eng_payload(ecb)` 的 `params.{prefixLen,injectOffset,payload,…}` —— **已接线**
+ *   - `formatJwtReport`         ← `xp_jwt_forge` 的 render 正文（候选密钥裁剪到 10 条）—— **尚未接线**
+ *
+ * ⚠ 接线史（2026-10-06 · 任务 `t-dd3c6faa`）：本模块自 2026-09 抽出后**长期无人调用**
+ * （`apply()` 里 serialize 写死 `properties: {}`、ecb 写死 `prefixLen:16 / injectOffset:0`），
+ * 即「抽出来、忘了接回去」——直到判据工具 `scripts/scan-dead-modules.mjs` 把它判成
+ * 「生产零调用 · 仅测试引用」才浮出水面。前两个函数已接回，并**由此抓出一个真缺陷**：
+ * `parseEcbArgs` 的 `!0` 守卫把 `injectOffset=0`（从开头注入）当「必填缺失」拒掉，而缺省路径
+ * 恰好传 0 ⇒ 接回当天即被 `tests/wire-contract.test.mjs` 的缺省对照抓红（详见该函数 JSDoc）。
+ * `formatJwtReport` 因**统一 JSON 渲染已取代逐工具 render**而暂未接线，状态登记在语义文档 §10。
  */
 
 import type { JwtResult } from './xp-jwt.js'
@@ -45,9 +53,12 @@ export type EcbArgsParse = { ok: true; options: EcbSpliceOptions } | { ok: false
 /**
  * 解析并校验 xp_ecb_splice 入参。
  *
- * 守卫语义（保持原样，**不新增校验**）：
- *   - `Number(undefined)` = NaN → 被 `!prefixLen` 拦下（报「必填」而不是「类型错」）
- *   - `0` 被拒（`!0` 为真）——`prefixLen=0` 的合法场景（无前缀）因而无法表达
+ * 守卫语义（**2026-10-06 修正**，原为「保持原样、不新增校验」的搬家语义）：
+ *   - 必填判据是**非有限数**（NaN/Infinity）⇒ 缺失 / 非数字被拦（报「必填」而不是「类型错」）
+ *   - **`0` 合法**：`prefixLen=0`（无前缀）与 `injectOffset=0`（从开头注入）都是真实场景。
+ *     ⚠ 原实现写 `!prefixLen || !injectOffset`，而 `!0` 为真 ⇒ 这两个合法值被拒。该缺陷在旧件里
+ *     从未暴露（调用方总传非 0 偏移），**接回 `eng_payload` 当天即被缺省路径对照抓出**
+ *     （缺省 `injectOffset=0` ⇒ 不传 params 的正常调用直接失败）。
  *   - **负值通过**；`blockSize` 不校验（0 会让块计算 NaN 化，见 tests/primitives）
  *   - 两道守卫有先后：先 prefixLen/injectOffset，再 payload
  */
@@ -55,7 +66,9 @@ export function parseEcbArgs(raw: EcbArgsInput): EcbArgsParse {
   const prefixLen = Number(raw.prefixLen)
   const injectOffset = Number(raw.injectOffset)
   const payload = String(raw.payload ?? '')
-  if (!prefixLen || !injectOffset) return { ok: false, error: 'prefixLen/injectOffset 必填' }
+  if (!Number.isFinite(prefixLen) || !Number.isFinite(injectOffset)) {
+    return { ok: false, error: 'prefixLen/injectOffset 必填（且须为有限数字）' }
+  }
   if (!payload) return { ok: false, error: 'payload 必填' }
   const blockSize = (raw.blockSize ?? 16) as number
   const escapeChar = (raw.escapeChar ?? '\\') as string
