@@ -58,7 +58,11 @@ const SRC = path.join(ROOT, 'src')
  * @returns {'USE'|'REEXPORT'|'TYPE'|'NONE'}
  */
 function refKindOf(text, base) {
-  const mod = '(?:^|\\.{1,2}/)[^\'"]*' + base + '(?:\\.js)?'
+  // 说明符后缀：本生态**两种写法并存**——`./m.js`（TS ESM 惯例）与 `./m.ts`（带扩展名的 TS 导入）。
+  // 2026-10-06 实测 `dsh-agent-memory` 全仓用 `.ts`；只认 `.js` 会让该仓**全部引用漏检**，
+  // 一次误报 17 个模块（含 `store` / `tools` / `config` 这些核心件）——这是缺陷⑥，
+  // 由「53/63 个插件都报死代码」这个**不可能的读数**反查出来的。
+  const mod = '(?:^|\\.{1,2}/)[^\'"]*' + base + '(?:\\.(?:js|ts|mjs|cjs|jsx|tsx))?'
   // 子句（`import`/`export` 与 `from` 之间）允许跨行，但**不得含 `from`**。
   // 这一条约束同时给出两个性质：
   //   ① 多行 import 可识别（缺陷①的修法）；
@@ -85,14 +89,24 @@ function refKindOf(text, base) {
  * @param {readonly string[]} srcFileNames `src/` 下的 `.ts` 文件名
  * @returns {Set<string>}
  */
-function entryNamesOf(pkg, srcFileNames) {
+function entryNamesOf(pkg, dshManifest, srcFileNames) {
   const names = new Set(['index.ts'])
+  const add = (spec) => {
+    if (typeof spec !== 'string' || spec === '') return
+    const b = path.basename(spec).replace(/\.d\.ts$/, '.ts').replace(/\.(js|cjs|mjs|ts|tsx|jsx)$/, '.ts')
+    if (srcFileNames.includes(b)) names.add(b)
+  }
   if (pkg !== null && typeof pkg === 'object') {
-    for (const key of ['main', 'module', 'types', 'typings']) {
-      const v = pkg[key]
-      if (typeof v !== 'string' || v === '') continue
-      const b = path.basename(v).replace(/\.d\.ts$/, '.ts').replace(/\.(js|cjs|mjs|ts)$/, '.ts')
-      if (srcFileNames.includes(b)) names.add(b)
+    for (const key of ['main', 'module', 'types', 'typings']) add(pkg[key])
+  }
+  // `dsh-plugin.json`（Fabric manifest）：入口写在 `entrypoints.<role>`（如 `host: "lib/fabric.js"`）。
+  // ⚠ 缺陷⑦（2026-10-06）：原实现漏了这里 ⇒ **46 个插件的 `src/fabric.ts` 被逐个误报成死代码**。
+  // 症状指纹：49 个仓「**每个恰好 1 个**」——这种整齐到可疑的分布本身就是假阳性的信号，
+  // 而不是「生态里恰好到处都留了一个死文件」。
+  if (dshManifest !== null && typeof dshManifest === 'object') {
+    const eps = dshManifest['entrypoints']
+    if (eps !== null && typeof eps === 'object' && !Array.isArray(eps)) {
+      for (const v of Object.values(eps)) add(v)
     }
   }
   return names
@@ -134,6 +148,10 @@ function selfTest() {
     ['类型再导出', "export type { T } from './mod.js'", 'TYPE'],
     ['无关模块（须判否）', "import { z } from './other.js'", 'NONE'],
     ['前缀相同但不同名（须判否）', "import { z } from './mod-extra.js'", 'NONE'],
+    ['.ts 扩展名的值导入（缺陷⑥尸体样本）', "import { a } from './mod.ts'", 'USE'],
+    ['无扩展名的值导入', "import { a } from './mod'", 'USE'],
+    ['.ts + 多行 + 类型导入', "import type {\n  T,\n} from './mod.ts'", 'TYPE'],
+    ['.tsx 后缀（同一族）', "import { a } from './mod.tsx'", 'USE'],
     ['相邻 import 不得串线（缺陷④尸体样本）', "import { a } from './other.js'\nimport type { T } from './mod.js'", 'TYPE'],
     ['相邻 import 反向（值导入在后）', "import { a } from './other.js'\nimport { b } from './mod.js'", 'USE'],
     ['三段相邻（只认自己那段）', "import type { A } from './a.js'\nimport { b } from './mod.js'\nimport { c } from './c.js'", 'USE'],
@@ -147,11 +165,15 @@ function selfTest() {
   }
 
   // 入口解析（缺陷③）的尸体样本：约定名兜底 + package.json 指认 + 不指认的不得混入
-  const files = ['index.ts', 'other.ts', 'gate.ts']
+  const files = ['index.ts', 'other.ts', 'gate.ts', 'fabric.ts']
   const entryCases = [
-    ['约定名 index.ts（无 package.json）', entryNamesOf(null, files).has('index.ts'), true],
-    ['package.json main 指认', entryNamesOf({ main: 'lib/other.js' }, files).has('other.ts'), true],
-    ['main 指向 src 外（不混入）', entryNamesOf({ main: 'lib/index.js' }, files).size, 1],
+    ['约定名 index.ts（无 package.json）', entryNamesOf(null, null, files).has('index.ts'), true],
+    ['package.json main 指认', entryNamesOf({ main: 'lib/other.js' }, null, files).has('other.ts'), true],
+    ['main 指向 src 外（不混入）', entryNamesOf({ main: 'lib/index.js' }, null, files).size, 1],
+    ['dsh-plugin.json entrypoints.host（缺陷⑦尸体样本）',
+      entryNamesOf(null, { entrypoints: { host: 'lib/fabric.js' } }, files).has('fabric.ts'), true],
+    ['entrypoints 指向 src 外（不混入）',
+      entryNamesOf(null, { entrypoints: { host: 'lib/nope.js' } }, files).size, 1],
   ]
   for (const [name, got, want] of entryCases) {
     const ok = got === want
@@ -207,13 +229,17 @@ const srcFiles = fs
   .filter((e) => e.isFile() && e.name.endsWith('.ts'))
   .map((e) => e.name)
 
-let pkg = null
-try {
-  pkg = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8'))
-} catch {
-  /* 读不到 package.json：入口退回约定名 index.ts（不静默当「无入口」） */
+const readJson = (file) => {
+  try {
+    return JSON.parse(fs.readFileSync(file, 'utf8'))
+  } catch {
+    /* 读不到即返回 null——调用方按「该来源无入口声明」处理，不静默当「无入口」 */
+    return null
+  }
 }
-const entryNames = entryNamesOf(pkg, srcFiles)
+const pkg = readJson(path.join(ROOT, 'package.json'))
+const dshManifest = readJson(path.join(ROOT, 'dsh-plugin.json'))
+const entryNames = entryNamesOf(pkg, dshManifest, srcFiles)
 
 const SCAN_DIRS = [SRC, path.join(ROOT, 'tests')].filter((d) => fs.existsSync(d))
 const allFiles = SCAN_DIRS.flatMap((d) => collect(d))
