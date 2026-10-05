@@ -276,86 +276,13 @@ function makeCtx() {
   return { ctx, registered }
 }
 
-// ⚠ 2026-10-05 移植时 skip：本条测的是**接线层**（apply 注册 N 个工具 / 落 scan 行），
-//   而融合 5 个安全线插件后 apply 的契约已变（工具数 8 -> 12、注册表结构不同）。
-//   判据意图保留，待按新契约重写——登记在任务 t-34662064 的待办里，不删除。
-//   （同族：exploit-kit 的 tool-contract.test.mjs，一并重写。）
-test.skip('接线：apply 落 boot 行并注册 8 工具；一次爬取落 start/end 且带过滤依据', async () => {
-  const home = join(tmp, 'wired')
-  process.env['DSH_HOME'] = home
-  const { ctx, registered } = makeCtx()
-  apply(ctx, { enabled: true })
-  assert.equal(registered.length, 8)
-
-  const originalFetch = globalThis.fetch
-  globalThis.fetch = async () => ({ status: 200, ok: true, text: async () => DEFECT_HTML })
-  try {
-    const tool = registered.find((t) => t.name === 'red_crawl_links')
-    const out = await tool.execute({ url: 'http://a.com/', maxLinks: 50 })
-    assert.equal(out.ok, true)
-    assert.equal(out.links.length, 2)                     // 模型可见输出不变（仍 2 条）
-  } finally {
-    globalThis.fetch = originalFetch
-  }
-
-  const lines = readTraceEntries(redTracePath(home))
-  assert.deepEqual(lines.map((l) => l.phase), ['boot', 'scan/start', 'scan/end'])
-  const end = lines[2]
-  assert.equal(end.tool, 'red_crawl_links')
-  assert.equal(end.target, 'http://a.com/')
-  assert.equal(end.raw, 9)                                 // Q4：原始命中条数
-  assert.equal(end.hits, 2)                                // Q4：过滤后条数
-  assert.deepEqual(end.stats.reasons, { scheme: 3, 'off-origin': 2, duplicate: 1, 'invalid-url': 1 })
-  assert.equal(typeof end.durationMs, 'number')
-})
-
-// ⚠ 2026-10-05 移植时 skip：本条测的是**接线层**（apply 注册 N 个工具 / 落 scan 行），
-//   而融合 5 个安全线插件后 apply 的契约已变（工具数 8 -> 12、注册表结构不同）。
-//   判据意图保留，待按新契约重写——登记在任务 t-34662064 的待办里，不删除。
-//   （同族：exploit-kit 的 tool-contract.test.mjs，一并重写。）
-test.skip('接线：失败路径落 scan/error（含可 grep 的失败分类），工具仍返回 ok:false', async () => {
-  const home = join(tmp, 'wired-fail')
-  process.env['DSH_HOME'] = home
-  const { ctx, registered } = makeCtx()
-  apply(ctx, { enabled: true })
-  const originalFetch = globalThis.fetch
-  globalThis.fetch = async () => { throw new Error('fetch failed: getaddrinfo ENOTFOUND nope.invalid') }
-  try {
-    const tool = registered.find((t) => t.name === 'red_crawl_links')
-    const out = await tool.execute({ url: 'http://nope.invalid/', maxLinks: 5 })
-    assert.equal(out.ok, false)
-    assert.match(out.error, /ENOTFOUND/)
-  } finally {
-    globalThis.fetch = originalFetch
-  }
-  const lines = readTraceEntries(redTracePath(home))
-  assert.deepEqual(lines.map((l) => l.phase), ['boot', 'scan/start', 'scan/error'])
-  assert.equal(lines[2].failure, 'dns')
-  assert.match(lines[2].error, /ENOTFOUND/)
-})
-
-// ⚠ 2026-10-05 移植时 skip：本条测的是**接线层**（apply 注册 N 个工具 / 落 scan 行），
-//   而融合 5 个安全线插件后 apply 的契约已变（工具数 8 -> 12、注册表结构不同）。
-//   判据意图保留，待按新契约重写——登记在任务 t-34662064 的待办里，不删除。
-//   （同族：exploit-kit 的 tool-contract.test.mjs，一并重写。）
-test.skip('尸体测试（接线级）：DSH_HOME 不可写时工具照常返回（观测不反噬）', async () => {
-  const blocker = join(tmp, 'blocker-wired')
-  writeFileSync(blocker, 'not a dir', 'utf8')
-  process.env['DSH_HOME'] = join(blocker, 'nope')
-  const { ctx, registered } = makeCtx()
-  apply(ctx, { enabled: true })
-  const originalFetch = globalThis.fetch
-  globalThis.fetch = async () => ({ status: 200, ok: true, text: async () => DEFECT_HTML })
-  try {
-    const tool = registered.find((t) => t.name === 'red_crawl_links')
-    const out = await tool.execute({ url: 'http://a.com/', maxLinks: 50 })
-    assert.equal(out.ok, true)
-    assert.equal(out.links.length, 2)
-  } finally {
-    globalThis.fetch = originalFetch
-    process.env['DSH_HOME'] = join(tmp, 'home')
-  }
-})
+// ⚠ 2026-10-05：此处原有三条 `test.skip` **接线级**测试（apply 落 boot/scan 行、失败落 scan/error、
+//   观测不反噬的尸体测试）。融合 5 个安全线插件后 apply 契约已变（工具数 8 → 12、副作用统一走
+//   `reg()` 单一切面、轨迹从 `redTrace` 通道迁到交战国度的 `timeline.jsonl`），三条的**判据意图**
+//   已按新契约重写并迁至 `tests/wire-contract.test.mjs`（接线①②③ + 两条结构不变量）。
+//   ⇒ 本文件不再保留 skip；`redTrace` 系纯层函数仍由本文件上方各用例覆盖（它们测的是模块行为）。
+//   同族的归档项 `_archive/dsh-exploit-kit-*/tests/tool-contract.test.mjs`（13 条）判据意图
+//   由 `wire-contract.test.mjs` 的 I2/I5 两条不变量承接。
 
 test('cleanup', () => {
   rmSync(tmp, { recursive: true, force: true })

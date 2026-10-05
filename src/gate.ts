@@ -176,24 +176,17 @@ export function gateDeniedLine(input: {
 }
 
 /**
- * 落盘/显示用的 target 脱敏：剥离 URL 内嵌凭据（`user:pass@host` ⇒ `host`）。
+ * 落盘/显示用的 target 脱敏：**单一真源在 `red-trace.ts`**（本处只 re-export）。
  *
- * **为什么需要它**（2026-10-05，由移植归档测试的任务 t-34662064 抓出真缺陷）：
- * `eng_recon_web` 的 `url` 与 `eng_verify` 的 `target` 都允许内嵌 `user:pass@`（会转 Basic auth），
- * 而 `targetOf` 的返回值会写进 `timeline.jsonl`（`gate/denied` 与 `tool/end` 两处）**并显示在返回文本里**
- * ⇒ 凭据落盘。融合 5 个安全线插件时，旧插件里「**会落盘的 URL 必过 summarizeUrl**」这条防线
- * 没有被带过来（旧测试还在，因此一移植就报红）。
+ * **为什么改成 re-export**（2026-10-05 由接线级验收 t-4d733b3c 抓出）：
+ * 融合后此处曾另写一个同名实现 `hostname + pathname`，它**过度脱敏**——把协议、端口、query 一并剥掉
+ * （`http://a.com:8080/x?id=7` ⇒ `a.com/x`）。而「协议 / 非标准端口 / 参数」正是取证要保留的信息
+ * （`http` 与 `https`、`:80` 与 `:8080` 是安全评级的实质区别）。更要命的是：它与 `red-trace.ts`
+ * 的同名函数**语义不同却零测试覆盖**（测试只覆盖后者）⇒ 典型「同名漂移」，且接线层用的恰是差的那个。
  *
- * ⚠ **绝不能改 `targetOf` 本身**：`decideGate` 用同一个值做 scope 匹配（`inList`），
- * 剥掉协议或凭据会让合法目标匹配不上 ⇒ **误拦合法动作**。⇒ 分层：**裁决用原始值，落盘用本函数**。
- * ⚠ 与 `summarizeUrl` 的差别：那个把非 URL 变成 `<unparsable-url>`；本函数**非 URL 原样返回**
- * ——因为 target 常常就是主机名/IP/CIDR，换成哨兵会毁掉轨迹的可读性与可复核性。
+ * `red-trace.ts` 版更强：保留协议 / 端口 / 非凭据 query，只对 userinfo 密码与凭据型 query 打码，且幂等。
+ *
+ * 语义分工（不变）：`decideGate` 仍用**原始** target 做 scope 匹配（剥掉会误拦合法动作），
+ * **只有落盘与显示**经本函数。
  */
-export function redactTarget(target: string): string {
-  try {
-    const u = new URL(target)
-    return `${u.hostname}${u.pathname}`
-  } catch {
-    return target
-  }
-}
+export { redactTarget } from './red-trace.js'
