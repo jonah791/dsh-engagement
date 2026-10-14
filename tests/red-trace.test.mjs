@@ -87,7 +87,7 @@ test('redactTarget：userinfo / 凭据型 query 脱敏，普通 query 原样，�
   assert.equal(redactTarget('http://a.com/x?id=7'), 'http://a.com/x?id=7')
   assert.equal(redactTarget('a.com:22'), 'a.com:22')          // 非 URL 目标原样
   assert.equal(redactTarget('http://a.com?api_key=k'), `http://a.com?api_key=${REDACTED}`)
-  assert.equal(redactHome('http://a.com/C:/Users/tr/x', 'C:\\Users\\tr'), 'http://a.com/<home>/x')
+  assert.equal(redactHome('http://a.com/C:/Users/demo/x', 'C:\\Users\\demo'), 'http://a.com/<home>/x')
   const once = redactTarget('http://u:p@a.com?secret=s')
   assert.equal(redactTarget(once), once)                       // 幂等
   assert.deepEqual(homePathVariants(''), [])
