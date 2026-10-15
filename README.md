@@ -1,8 +1,42 @@
+<!--
+  DSH 插件生态公约声明（plugin-ecosystem-convention · 组合优先/声明清晰/兼容优先）
+  purpose: 安全交战闭环：一次交战（定范围与授权 → 侦察 → 发现 → 验证/利用 → 检测侧校验 → 证据与报告）的唯一状态持有者与唯一执行入口
+  inject: ['tools']
+  tools: eng_open,eng_status,eng_close,eng_recon_dns,eng_recon_host,eng_recon_web,eng_intel,eng_finding,eng_payload,eng_verify,eng_detect,eng_report
+  runtime: host-only
+  envDeps: 见 README「配置」节
+  boundary: 见 README「设计要点」与「生效判据与回退」节
+  compat: cordis ^4.0.1 / dsh-tools >=0.1.0-rc.6
+-->
 # dsh-engagement — 安全交战闭环
+
+<p align="center">
+  <a href="https://github.com/jonah791/dsh-engagement"><img src="https://img.shields.io/badge/version-0.1.0-blue" alt="version"></a>
+  <img src="https://img.shields.io/badge/License-MIT-green" alt="license">
+  <img src="https://img.shields.io/badge/TypeScript-3178C6" alt="TypeScript">
+  <img src="https://img.shields.io/badge/tests-239%20passed-brightgreen" alt="tests">
+</p>
 
 一次交战（engagement）的完整闭环：**定范围与授权 → 侦察 → 发现 → 验证/利用 → 检测侧校验 → 证据与报告**。
 
 替换 `dsh-red-team` + `dsh-blue-team` + `dsh-exploit-kit` + `dsh-cyber-range` + `dsh-sec-tools`（**36 工具 → 12**）。设计依据：`docs/plans/插件融合设计_安全交战_2026-09-23.md`；权威契约见 [docs/semantic.md](docs/semantic.md)。
+
+## 快速开始
+
+**1) 装依赖**（在目标 profile 的 `package.json` 加 link 依赖）：
+
+```jsonc
+"dsh-engagement": "link:E:/alice/self-plugins/dsh-engagement"
+```
+
+**2) 挂组合**：
+
+```yaml
+- id: dsh-engagement
+  name: dsh-engagement
+```
+
+**3) 30 秒验证**：`eng_open {title, authorizationSource, authorizationRef, targets, notAfter}` → 应落 `engagement.json`；`eng_status` 读回全貌
 
 ## 为什么需要新件
 
@@ -74,3 +108,11 @@
 ## 回退
 
 `plugin_mount` 五件旧件（源码与依赖均未删除）；交战国度目录保留 ⇒ 回退无需重建。
+
+## 测试
+
+```bash
+cd self-plugins/dsh-engagement && npm test
+```
+
+**239 条用例**（跑一次得到）。
